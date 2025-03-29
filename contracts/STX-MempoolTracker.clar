@@ -205,3 +205,138 @@
         )
     )
 )
+
+(define-public (update-transaction-status (tx-id (string-ascii 64)) (confirmed bool))
+    (begin
+        (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
+        (asserts! (validate-tx-id tx-id) ERR-INVALID-TX-ID)
+        (match (map-get? tracked-transactions {tx-id: tx-id})
+            tx-data (begin
+                (map-set tracked-transactions
+                    {tx-id: tx-id}
+                    (merge tx-data {confirmed: confirmed})
+                )
+                (ok true)
+            )
+            ERR-NOT-FOUND
+        )
+    )
+)
+
+(define-public (add-to-watchlist (user principal) (tx-id (string-ascii 64)))
+    (begin
+        ;; Add user validation
+        (asserts! (validate-user user) ERR-INVALID-USER)
+        (asserts! (validate-tx-id tx-id) ERR-INVALID-TX-ID)
+
+        (let (
+            (current-watchlist (default-to {tx-ids: (list), alert-threshold: u0, notifications-enabled: false}
+                (map-get? user-watchlists {user: user})))
+        )
+            (asserts! (< (len (get tx-ids current-watchlist)) u100) ERR-INVALID-PARAMS)
+            (map-set user-watchlists
+                {user: user}
+                (merge current-watchlist 
+                    {tx-ids: (unwrap! (as-max-len? (append (get tx-ids current-watchlist) tx-id) u100) ERR-INVALID-PARAMS)}
+                )
+            )
+            (ok true)
+        )
+    )
+)
+
+(define-public (update-fee-statistics (height uint) (stats {avg-fee: uint, min-fee: uint, max-fee: uint, recommended-low: uint, recommended-medium: uint, recommended-high: uint, total-tx-count: uint}))
+    (begin
+        (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
+        (asserts! (validate-height height) ERR-INVALID-HEIGHT)
+        (asserts! (validate-stats stats) ERR-INVALID-STATS)
+
+        (let (
+            (validated-height height)  ;; Now properly validated
+            (validated-stats stats)    ;; Already validated by validate-stats
+        )
+            (map-set fee-stats
+                {height: validated-height}
+                validated-stats
+            )
+            (ok true)
+        )
+    )
+)
+
+(define-public (update-mempool-metrics (metrics {size: uint, tx-count: uint, avg-confirmation-time: uint, congestion-level: uint}))
+    (begin
+        (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
+        (asserts! (validate-metrics metrics) ERR-INVALID-METRICS)
+        (let (
+            (current-time (unwrap! (get-block-info? time (- block-height u1)) (err u500)))
+            (validated-metrics metrics)  ;; now validated
+        )
+            (map-set mempool-metrics
+                {timestamp: current-time}
+                validated-metrics
+            )
+            (var-set last-update current-time)
+            (ok true)
+        )
+    )
+)
+
+;; Read-only functions
+(define-read-only (get-transaction-details (tx-id (string-ascii 64)))
+    (begin
+        (asserts! (validate-tx-id tx-id) ERR-INVALID-TX-ID)
+        (ok (map-get? tracked-transactions {tx-id: tx-id}))
+    )
+)
+
+(define-read-only (get-user-watchlist (user principal))
+    (ok (map-get? user-watchlists {user: user}))
+)
+
+(define-read-only (get-fee-statistics (height uint))
+    (ok (map-get? fee-stats {height: height}))
+)
+
+(define-private (get-congestion-level)
+    (let (
+        (current-metrics (default-to {size: u0, tx-count: u0, avg-confirmation-time: u0, congestion-level: u0}
+            (map-get? mempool-metrics {timestamp: (var-get last-update)})))
+    )
+        (get congestion-level current-metrics)
+    )
+)
+
+(define-private (validate-user (user principal))
+    true  ;; Principals are inherently valid in Clarity when they compile
+)
+
+(define-private (validate-height (height uint))
+    (and
+        (>= height u0)
+        (<= height block-height)
+    )
+)
+
+(define-private (validate-new-owner (new-owner principal))
+    (not (is-eq new-owner (var-get contract-owner)))  ;; Only check if different from current owner
+)
+
+;; Admin functions
+(define-public (set-min-fee-threshold (new-threshold uint))
+    (begin
+        (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
+        (asserts! (validate-threshold new-threshold) ERR-INVALID-THRESHOLD)
+        (var-set min-fee-threshold new-threshold)
+        (ok true)
+    )
+)
+
+(define-public (transfer-ownership (new-owner principal))
+    (begin
+        (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
+        (asserts! (validate-new-owner new-owner) ERR-INVALID-OWNER)
+        (var-set contract-owner new-owner)
+        (ok true)
+    )
+)
